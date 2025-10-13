@@ -14,13 +14,5 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": [
-    "tiktok",
-    "webhook",
-    "forwarder",
-    "express",
-    "nodejs"
-  ],
-  "author": "",
   "license": "MIT"
 }
