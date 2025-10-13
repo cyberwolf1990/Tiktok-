@@ -5,59 +5,62 @@ import fetch from "node-fetch";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Tu nombre de usuario de TikTok (sin @)
+// 👇 Configura estas variables desde Railway o en tu entorno local
 const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "nombre_de_usuario";
-
-// Webhook de destino (puede ser un Discord, tu API, etc.)
 const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook-aqui.com/recibir";
 
-// --- Servidor Express ---
+// Middleware para recibir JSON
 app.use(express.json());
 
+// Ruta de prueba
 app.get("/", (req, res) => {
   res.send("✅ TikTok Live Connector activo y reenviando mensajes");
 });
 
-// --- Conexión al Live ---
-const tiktokLiveConnection = new WebcastPushConnection(TIKTOK_USERNAME);
+// --- Función para iniciar conexión con TikTok Live ---
+async function startTikTokConnection() {
+  const tiktokLiveConnection = new WebcastPushConnection(TIKTOK_USERNAME);
 
-// Cuando llega un mensaje nuevo del chat
-tiktokLiveConnection.on("chat", async (data) => {
-  console.log(`💬 ${data.uniqueId}: ${data.comment}`);
+  // Evento: cuando alguien escribe en el chat
+  tiktokLiveConnection.on("chat", async (data) => {
+    console.log(`💬 ${data.uniqueId}: ${data.comment}`);
 
-  // Reenvía el mensaje al webhook configurado
-  try {
-    await fetch(TARGET_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: data.uniqueId,
-        comment: data.comment,
-        timestamp: data.createTime,
-      }),
-    });
-  } catch (err) {
-    console.error("Error al enviar al webhook:", err.message);
-  }
-});
+    // Enviar mensaje al webhook
+    try {
+      await fetch(TARGET_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: data.uniqueId,
+          comment: data.comment,
+          timestamp: data.createTime,
+        }),
+      });
+    } catch (err) {
+      console.error("❌ Error al enviar al webhook:", err.message);
+    }
+  });
 
-// Manejo de errores de conexión
-tiktokLiveConnection.on("disconnected", () => {
-  console.log("⚠️ Desconectado del Live, intentando reconectar...");
-  setTimeout(() => tiktokLiveConnection.connect(), 5000);
-});
+  // Evento: desconexión automática
+  tiktokLiveConnection.on("disconnected", () => {
+    console.log("⚠️ Desconectado del Live, intentando reconectar en 5s...");
+    setTimeout(startTikTokConnection, 5000);
+  });
 
-// Intentar conexión inicial
-(async () => {
+  // Intentar conectar
   try {
     console.log(`🔌 Conectando al Live de @${TIKTOK_USERNAME}...`);
     const state = await tiktokLiveConnection.connect();
     console.log(`✅ Conectado al Live de @${state.roomInfo.owner.user.uniqueId}`);
   } catch (err) {
-    console.error("❌ Error al conectar:", err);
+    console.error("❌ Error al conectar con TikTok:", err.message);
+    console.log("Reintentando en 10 segundos...");
+    setTimeout(startTikTokConnection, 10000);
   }
-})();
+}
 
+// Iniciar servidor Express
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+  startTikTokConnection();
 });
