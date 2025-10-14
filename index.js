@@ -1,76 +1,85 @@
-import express from "express";
-import fetch from "node-fetch";
-import { WebcastPushConnection } from "tiktok-live-connector";
+import express from 'express';
+import fetch from 'node-fetch';
+import TikTokLive from 'tiktok-live-connector';
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// 🔧 Variables de entorno
-const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "nombre_de_usuario";
-const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook-aqui.com/recibir";
+const TIKTOK_USER = 'nombre_de_usuario';
+const MACRODROID_WEBHOOK = 'https://macrodroid-webhook-url';
 
-app.use(express.json());
+// Inicializa cliente TikTok
+let client = null;
+let liveActive = false;
 
-// 🌐 Endpoint básico para verificar que el servidor está activo
-app.get("/", (req, res) => {
-  res.send("✅ TikTok Live Connector activo y en espera de transmisión");
-});
-
-// --- Conexión con TikTok ---
-let tiktokConnection = null;
-let retryDelay = 30_000; // 30 segundos al inicio
-
-async function connectToTikTok() {
-  console.log(`🔌 Intentando conectar al Live de @${TIKTOK_USERNAME}...`);
-
+async function startLiveListener() {
   try {
-    // Crear conexión nueva cada intento
-    tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME);
+    client = new TikTokLive({ username: TIKTOK_USER });
 
-    // 📩 Evento: nuevo mensaje en el chat
-    tiktokConnection.on("chat", async (data) => {
-      console.log(`💬 ${data.uniqueId}: ${data.comment}`);
+    client.on('connected', (data) => {
+      liveActive = true;
+      console.log(`🔌 Conectado al live de ${TIKTOK_USER}, userId: ${data.userId}`);
+    });
+
+    client.on('disconnected', () => {
+      liveActive = false;
+      console.log('❌ Live cerrado o desconectado');
+      checkLiveLoop();
+    });
+
+    client.on('comment', async (data) => {
       try {
-        await fetch(TARGET_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: data.uniqueId,
-            comment: data.comment,
-            timestamp: data.createTime,
-          }),
+        const payload = {
+          username: data.user.uniqueId,
+          comment: data.comment,
+          timestamp: Date.now()
+        };
+
+        await fetch(MACRODROID_WEBHOOK, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+          body: JSON.stringify(payload)
         });
+
+        console.log('💬 Comentario enviado:', payload.comment);
       } catch (err) {
-        console.error("❌ Error al enviar al webhook:", err.message);
+        console.error('❌ Error enviando comentario:', err);
       }
     });
 
-    // ⚠️ Evento: desconexión
-    tiktokConnection.on("disconnected", () => {
-      console.warn("⚠️ Desconectado del Live, reintentando...");
-      scheduleReconnect();
-    });
-
-    // 🚀 Intentar conectar
-    const state = await tiktokConnection.connect();
-    console.log(`✅ Conectado al Live de @${state.roomInfo.owner.user.uniqueId}`);
-    retryDelay = 30_000; // Reiniciar el tiempo de espera si conecta
-
+    await client.connect();
   } catch (err) {
-    console.error("❌ No hay live activo o error al conectar con TikTok:");
-    scheduleReconnect();
+    liveActive = false;
+    console.log('❌ No hay live activo o error al conectar:', err.message);
+    checkLiveLoop();
   }
 }
 
-// 🔁 Lógica de reconexión con retardo exponencial
-function scheduleReconnect() {
-  console.log(`⏳ Reintentando en ${retryDelay / 1000} segundos...`);
-  setTimeout(connectToTikTok, retryDelay);
-  retryDelay = Math.min(retryDelay * 2, 5 * 60_000); // Máximo 5 minutos
+// Función que revisa periódicamente si hay un live activo
+function checkLiveLoop() {
+  if (liveActive) return; // ya está conectado
+
+  console.log('⏳ Verificando si hay live cada 60 segundos...');
+  const interval = setInterval(async () => {
+    if (!liveActive) {
+      console.log('🔌 Intentando reconectar al live...');
+      try {
+        await startLiveListener();
+      } catch {
+        console.log('❌ Aún no hay live activo');
+      }
+    } else {
+      clearInterval(interval); // si se conecta, detiene el loop
+    }
+  }, 60000);
 }
 
-// 🚀 Iniciar servidor
-app.listen(PORT, () => {
-  console.log(`🌍 Servidor Express escuchando en puerto ${PORT}`);
-  connectToTikTok(); // Conexión inicial al arrancar
+// Inicia verificación de live
+startLiveListener();
+
+// Express para Railway o VPS
+app.get('/', (req, res) => {
+  res.send('TikTok Live Forwarder robusto activo');
 });
+
+app.listen(PORT, () => console.log(`🌍 Servidor Express escuchando en puerto ${PORT}`));
