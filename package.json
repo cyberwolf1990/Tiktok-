@@ -1,19 +1,19 @@
 {
   "name": "tiktok-webhook-forwarder",
   "version": "1.0.0",
-  "description": "Servidor para recibir y reenviar webhooks de TikTok Live",
+  "description": "Forward TikTok Live comments to a webhook",
   "main": "index.js",
-  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
+    "axios": "^1.5.0",
     "express": "^4.18.2",
-    "node-fetch": "^3.3.2",
-    "tiktok-live-connector": "^1.5.2"
+    "tiktok-live-connector": "1.5.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": "18.x"
   },
-  "license": "MIT"
+  "author": "",
+  "license": "ISC"
 }
