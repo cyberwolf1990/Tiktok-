@@ -92,7 +92,7 @@ function simulateComments() {
 }
 
 // Descomenta la siguiente línea para activar la simulación
- simulateComments();
+// simulateComments();
 
 // Endpoint opcional para verificar que el servidor corre
 app.get("/", (req, res) => {
