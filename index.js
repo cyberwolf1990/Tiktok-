@@ -1,85 +1,67 @@
-import express from 'express';
-import fetch from 'node-fetch';
-import TikTokLive from 'tiktok-live-connector';
+import express from "express";
+import { WebcastPushConnection } from "tiktok-live-connector";
+import fetch from "node-fetch";
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-const TIKTOK_USER = 'nombre_de_usuario';
-const MACRODROID_WEBHOOK = 'https://macrodroid-webhook-url';
+const TIKTOK_USER = process.env.TIKTOK_USERNAME || "nombre_de_usuario";
+const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook-aqui.com/recibir";
 
-// Inicializa cliente TikTok
-let client = null;
-let liveActive = false;
+let connection = null;
+let isConnecting = false;
 
-async function startLiveListener() {
+// Función para iniciar la conexión
+async function connectToLive() {
+  if (isConnecting) return;
+  isConnecting = true;
+
   try {
-    client = new TikTokLive({ username: TIKTOK_USER });
+    console.log(`🔌 Intentando conectar al Live de @${TIKTOK_USER}...`);
+    connection = new WebcastPushConnection(TIKTOK_USER);
+    const state = await connection.connect();
+    console.log(`✅ Conectado al Live de @${state.roomInfo.owner.user.uniqueId}`);
 
-    client.on('connected', (data) => {
-      liveActive = true;
-      console.log(`🔌 Conectado al live de ${TIKTOK_USER}, userId: ${data.userId}`);
-    });
+    // Cuando llega un comentario
+    connection.on("chat", async (data) => {
+      const payload = {
+        username: data.uniqueId,
+        comment: data.comment,
+        timestamp: new Date().toISOString()
+      };
 
-    client.on('disconnected', () => {
-      liveActive = false;
-      console.log('❌ Live cerrado o desconectado');
-      checkLiveLoop();
-    });
-
-    client.on('comment', async (data) => {
       try {
-        const payload = {
-          username: data.user.uniqueId,
-          comment: data.comment,
-          timestamp: Date.now()
-        };
-
-        await fetch(MACRODROID_WEBHOOK, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+        await fetch(TARGET_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=UTF-8" },
           body: JSON.stringify(payload)
         });
-
-        console.log('💬 Comentario enviado:', payload.comment);
+        console.log(`💬 Enviado: ${data.uniqueId}: ${data.comment}`);
       } catch (err) {
-        console.error('❌ Error enviando comentario:', err);
+        console.error("❌ Error al enviar al webhook:", err.message);
       }
     });
 
-    await client.connect();
+    // Si se desconecta, reintenta
+    connection.on("disconnected", () => {
+      console.log("⚠️ Desconectado del Live. Reintentando en 60 segundos...");
+      isConnecting = false;
+      setTimeout(connectToLive, 60000);
+    });
   } catch (err) {
-    liveActive = false;
-    console.log('❌ No hay live activo o error al conectar:', err.message);
-    checkLiveLoop();
+    console.log("❌ No hay live activo o error al conectar:", err.message || err);
+    isConnecting = false;
+    setTimeout(connectToLive, 60000);
   }
 }
 
-// Función que revisa periódicamente si hay un live activo
-function checkLiveLoop() {
-  if (liveActive) return; // ya está conectado
+// Llamamos por primera vez
+connectToLive();
 
-  console.log('⏳ Verificando si hay live cada 60 segundos...');
-  const interval = setInterval(async () => {
-    if (!liveActive) {
-      console.log('🔌 Intentando reconectar al live...');
-      try {
-        await startLiveListener();
-      } catch {
-        console.log('❌ Aún no hay live activo');
-      }
-    } else {
-      clearInterval(interval); // si se conecta, detiene el loop
-    }
-  }, 60000);
-}
-
-// Inicia verificación de live
-startLiveListener();
-
-// Express para Railway o VPS
-app.get('/', (req, res) => {
-  res.send('TikTok Live Forwarder robusto activo');
+app.get("/", (req, res) => {
+  res.send("✅ TikTok Live Connector activo y reenviando mensajes");
 });
 
-app.listen(PORT, () => console.log(`🌍 Servidor Express escuchando en puerto ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🌍 Servidor Express escuchando en puerto ${PORT}`);
+});
