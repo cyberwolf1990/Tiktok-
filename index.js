@@ -21,14 +21,12 @@ async function startTikTokConnection() {
       console.log(`✅ Conectado al live de @${state.roomId}`);
     }).catch((err) => {
       console.error("❌ No hay live activo o error al conectar:", err.message);
-      console.log("⚠️ Intentando reconectar en 60s...");
-      setTimeout(startTikTokConnection, 60000);
     });
 
     // Evento: cuando alguien comenta
     tiktokConnection.on("chat", async (data) => {
       const payload = {
-        nickname: data.user.nickname, // <- enviamos el nickname
+        username: data.uniqueId,
         comment: data.comment,
         timestamp: Date.now()
       };
@@ -55,44 +53,8 @@ async function startTikTokConnection() {
 
   } catch (err) {
     console.error("❌ Error inicializando TikTok:", err.message);
-    console.log("⚠️ Intentando reconectar en 60s...");
-    setTimeout(startTikTokConnection, 60000);
   }
 }
-
-// --- Simulación de comentarios para pruebas ---
-function simulateComments() {
-  console.log("🧪 Modo prueba activado: simulando comentarios...");
-
-  setInterval(async () => {
-    const mockData = {
-      user: { nickname: "UsuarioPrueba" },
-      comment: "¡Hola desde la simulación!"
-    };
-
-    const payload = {
-      nickname: mockData.user.nickname,
-      comment: mockData.comment,
-      timestamp: Date.now()
-    };
-
-    console.log("💬 Comentario simulado:", payload);
-
-    try {
-      const res = await fetch(TARGET_WEBHOOK_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(payload)
-      });
-      console.log(`📤 Enviado al webhook de prueba (status: ${res.status})`);
-    } catch (err) {
-      console.error("❌ Error enviando comentario simulado:", err.message);
-    }
-  }, 5000); // cada 5 segundos
-}
-
-// Descomenta la siguiente línea para activar la simulación
-// simulateComments();
 
 // Endpoint opcional para verificar que el servidor corre
 app.get("/", (req, res) => {
