@@ -6,27 +6,37 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
-const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook.macrodroid.com"; // cámbialo por el tuyo
-const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "godbelcebu"; // cámbialo por tu usuario
+const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook.macrodroid.com";
+const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "godbelcebu";
 
 let tiktokConnection;
 
-// Función para iniciar la conexión con TikTok
 async function startTikTokConnection() {
   try {
     console.log(`🚀 Intentando conectar con @${TIKTOK_USERNAME}...`);
     tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME);
 
-    tiktokConnection.connect().then((state) => {
-      console.log(`✅ Conectado al live de @${state.roomId}`);
-    }).catch((err) => {
-      console.error("❌ No hay live activo o error al conectar:", err.message);
-    });
+    tiktokConnection.connect()
+      .then((state) => {
+        console.log(`✅ Conectado al live de @${TIKTOK_USERNAME} (RoomID: ${state.roomId})`);
+      })
+      .catch((err) => {
+        console.error("❌ No hay live activo o error al conectar:", err.message);
+      });
 
-    // Evento: cuando alguien comenta
+    // Cuando alguien comenta
     tiktokConnection.on("chat", async (data) => {
+      // Forzamos nickname usando todas las rutas posibles
+      const nickname =
+        data.nickname ||
+        data.user?.nickname ||
+        data.user?.profile?.nickname ||
+        data.userProfile?.nickname ||
+        data.userInfo?.nickname ||
+        data.uniqueId || "Desconocido";
+
       const payload = {
-        nickname: data.user?.nickname || data.uniqueId || "Desconocido",
+        nickname: nickname,
         comment: data.comment,
         timestamp: Date.now()
       };
@@ -45,7 +55,6 @@ async function startTikTokConnection() {
       }
     });
 
-    // Evento: live terminado o conexión perdida
     tiktokConnection.on("streamEnd", () => {
       console.log("⚠️ Live terminado, reconectando en 60s...");
       setTimeout(startTikTokConnection, 60000);
@@ -56,12 +65,10 @@ async function startTikTokConnection() {
   }
 }
 
-// Endpoint opcional para verificar que el servidor corre
 app.get("/", (req, res) => {
   res.send("✅ Servidor TikTok Webhook Forwarder corriendo correctamente");
 });
 
-// Iniciar servidor Express
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
   startTikTokConnection();
