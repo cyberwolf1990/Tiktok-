@@ -1,65 +1,59 @@
-const TikTokLive = require('tiktok-live-connector').default;
+// index.js
+const { WebcastPushConnection } = require('tiktok-live-connector');
 const express = require('express');
 const axios = require('axios');
 
-const USERNAME = 'nombre_de_usuario'; // Cambia por el usuario de TikTok
-const WEBHOOK_URL = 'https://tuwebhook.com/recibir'; // Cambia por tu webhook
-const PORT = 8080;
-
-// Configuración de Express
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 8080;
+const TIKTOK_USERNAME = 'nombre_de_usuario'; // Reemplaza con el usuario del Live
+const WEBHOOK_URL = 'TU_WEBHOOK_URL_AQUI'; // Reemplaza con tu webhook
 
-app.get('/', (req, res) => {
-    res.send('Servidor activo ✅');
-});
+let liveConnection = null;
 
-app.listen(PORT, () => {
-    console.log(`🌍 Servidor Express escuchando en puerto ${PORT}`);
-});
-
-// Función para iniciar conexión al live
+// Función para conectar al live
 async function connectToLive() {
     try {
-        console.log(`🔌 Intentando conectar al Live de @${USERNAME}...`);
-        const liveConnection = new TikTokLive({ username: USERNAME });
-
-        liveConnection.on('connected', (data) => {
-            console.log(`✅ Conectado al live de ${USERNAME}, viewers: ${data.viewerCount}`);
-        });
-
-        liveConnection.on('disconnected', (reason) => {
-            console.log(`⚠️ Desconectado: ${reason}. Reintentando en 30s...`);
-            setTimeout(connectToLive, 30000);
-        });
+        liveConnection = new WebcastPushConnection(TIKTOK_USERNAME);
 
         liveConnection.on('comment', async (data) => {
-            // Construir JSON
-            const payload = {
-                username: data.user.uniqueId, // username del que comenta
-                comment: data.comment,
-                timestamp: Date.now()
-            };
-
-            console.log('📩 Comentario recibido:', payload);
-
-            // Enviar al webhook
             try {
-                await axios.post(WEBHOOK_URL, payload);
+                const commentText = data.comment;
+                const username = data.user.uniqueId; // Mantener username
+                const timestamp = Date.now();
+
+                // Enviar al webhook
+                await axios.post(WEBHOOK_URL, {
+                    username,
+                    comment: commentText,
+                    timestamp
+                });
             } catch (err) {
                 console.error('❌ Error enviando al webhook:', err.message);
             }
         });
 
+        liveConnection.on('streamEnd', () => {
+            console.log('📴 El live terminó. Reintentando en 2 minutos...');
+            setTimeout(connectToLive, 120000); // Reintentar en 2 min
+        });
+
         await liveConnection.connect();
+        console.log(`🔌 Conectado al Live de @${TIKTOK_USERNAME}`);
     } catch (err) {
-        console.error('❌ No hay live activo o error al conectar:', err.message || err);
-        // Reintento progresivo
-        const delay = 30 + Math.floor(Math.random() * 90); // entre 30 y 120s
-        console.log(`⏳ Reintentando en ${delay} segundos...`);
-        setTimeout(connectToLive, delay * 1000);
+        console.error('❌ No hay live activo o error al conectar:', err.message);
+        const retryTime = 60000; // 1 minuto
+        console.log(`⏳ Reintentando en ${retryTime / 1000} segundos...`);
+        setTimeout(connectToLive, retryTime);
     }
 }
 
-// Iniciar la conexión
-connectToLive();
+// Servidor Express
+app.get('/', (req, res) => {
+    res.send('Servidor corriendo');
+});
+
+// Iniciar el servidor y la conexión al live
+app.listen(PORT, () => {
+    console.log(`🌍 Servidor Express escuchando en puerto ${PORT}`);
+    connectToLive();
+});
