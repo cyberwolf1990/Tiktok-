@@ -1,59 +1,68 @@
-// index.js
-const { WebcastPushConnection } = require('tiktok-live-connector');
-const express = require('express');
-const axios = require('axios');
+import express from "express";
+import fetch from "node-fetch";
+import { WebcastPushConnection } from "tiktok-live-connector";
 
 const app = express();
+app.use(express.json());
+
 const PORT = process.env.PORT || 8080;
-const TIKTOK_USERNAME = 'nombre_de_usuario'; // Reemplaza con el usuario del Live
-const WEBHOOK_URL = 'TU_WEBHOOK_URL_AQUI'; // Reemplaza con tu webhook
+const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook.macrodroid.com"; // cámbialo por el tuyo
+const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "godbelcebu"; // cámbialo por tu usuario
 
-let liveConnection = null;
+let tiktokConnection;
 
-// Función para conectar al live
-async function connectToLive() {
-    try {
-        liveConnection = new WebcastPushConnection(TIKTOK_USERNAME);
+// Función para iniciar la conexión con TikTok
+async function startTikTokConnection() {
+  try {
+    console.log(`🚀 Intentando conectar con @${TIKTOK_USERNAME}...`);
+    tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME);
 
-        liveConnection.on('comment', async (data) => {
-            try {
-                const commentText = data.comment;
-                const username = data.user.uniqueId; // Mantener username
-                const timestamp = Date.now();
+    tiktokConnection.connect().then((state) => {
+      console.log(`✅ Conectado al live de @${state.roomId}`);
+    }).catch((err) => {
+      console.error("❌ No hay live activo o error al conectar:", err.message);
+    });
 
-                // Enviar al webhook
-                await axios.post(WEBHOOK_URL, {
-                    username,
-                    comment: commentText,
-                    timestamp
-                });
-            } catch (err) {
-                console.error('❌ Error enviando al webhook:', err.message);
-            }
+    // Evento: cuando alguien comenta
+    tiktokConnection.on("chat", async (data) => {
+      const payload = {
+        username: data.uniqueId,
+        comment: data.comment,
+        timestamp: Date.now()
+      };
+
+      console.log("💬 Comentario recibido:", payload);
+
+      try {
+        const res = await fetch(TARGET_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify(payload)
         });
+        console.log(`📤 Enviado a webhook (status: ${res.status})`);
+      } catch (err) {
+        console.error("❌ Error enviando al webhook:", err.message);
+      }
+    });
 
-        liveConnection.on('streamEnd', () => {
-            console.log('📴 El live terminó. Reintentando en 2 minutos...');
-            setTimeout(connectToLive, 120000); // Reintentar en 2 min
-        });
+    // Evento: live terminado o conexión perdida
+    tiktokConnection.on("streamEnd", () => {
+      console.log("⚠️ Live terminado, reconectando en 60s...");
+      setTimeout(startTikTokConnection, 60000);
+    });
 
-        await liveConnection.connect();
-        console.log(`🔌 Conectado al Live de @${TIKTOK_USERNAME}`);
-    } catch (err) {
-        console.error('❌ No hay live activo o error al conectar:', err.message);
-        const retryTime = 60000; // 1 minuto
-        console.log(`⏳ Reintentando en ${retryTime / 1000} segundos...`);
-        setTimeout(connectToLive, retryTime);
-    }
+  } catch (err) {
+    console.error("❌ Error inicializando TikTok:", err.message);
+  }
 }
 
-// Servidor Express
-app.get('/', (req, res) => {
-    res.send('Servidor corriendo');
+// Endpoint opcional para verificar que el servidor corre
+app.get("/", (req, res) => {
+  res.send("✅ Servidor TikTok Webhook Forwarder corriendo correctamente");
 });
 
-// Iniciar el servidor y la conexión al live
+// Iniciar servidor Express
 app.listen(PORT, () => {
-    console.log(`🌍 Servidor Express escuchando en puerto ${PORT}`);
-    connectToLive();
+  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+  startTikTokConnection();
 });
