@@ -26,7 +26,7 @@ async function startTikTokConnection() {
     // Evento: cuando alguien comenta
     tiktokConnection.on("chat", async (data) => {
       const payload = {
-        username: data.uniqueId,
+        nickname: data.user?.nickname || data.uniqueId || "Desconocido",
         comment: data.comment,
         timestamp: Date.now()
       };
