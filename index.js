@@ -1,7 +1,7 @@
 import express from "express";
 import fetch from "node-fetch";
 import { WebcastPushConnection } from "tiktok-live-connector";
-import crypto from "crypto"; // Módulo nativo de Node.js para generar hashes
+import crypto from "crypto";
 
 const app = express();
 app.use(express.json());
@@ -14,37 +14,24 @@ const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "godbelcebu";
 // --- VARIABLES DE ESTADO ---
 let tiktokConnection;
 let reconnectAttempt = 0;
+let connectionStartTimestamp = 0; // 🔹 Guarda el momento de conexión
 const MAX_RECONNECT_INTERVAL_MS = 300000; // 5 minutos
 const RECONNECT_BASE_MS = 5000; // 5 segundos
-
-// --- CACHÉ DE DEDUPLICACIÓN ---
 const recentMessageCache = new Set();
-const CACHE_LIFESPAN_MS = 10000; // Mantener los IDs 10 segundos
+const CACHE_LIFESPAN_MS = 10000;
 
-// --- FUNCIONES DE UTILIDAD ---
-
+// --- FUNCIONES AUXILIARES ---
 function calculateReconnectDelay() {
-    const delay = Math.min(
-        RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt),
-        MAX_RECONNECT_INTERVAL_MS
-    );
-    return delay;
+    return Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt), MAX_RECONNECT_INTERVAL_MS);
 }
 
-/**
- * Genera un hash (ID único) si no hay msgId disponible.
- */
 function generateMessageHash(data, nickname) {
     const uniqueIdPart = data.user?.uniqueId || nickname;
     const commentPart = data.comment;
     const timeSegment = Math.floor(Date.now() / 5000) * 5000;
-    const combinedString = `${uniqueIdPart}:${commentPart}:${timeSegment}`;
-    return crypto.createHash("sha256").update(combinedString).digest("hex");
+    return crypto.createHash("sha256").update(`${uniqueIdPart}:${commentPart}:${timeSegment}`).digest("hex");
 }
 
-/**
- * Envía el payload al webhook destino.
- */
 async function sendToWebhook(payload) {
     try {
         const res = await fetch(TARGET_WEBHOOK_URL, {
@@ -52,12 +39,7 @@ async function sendToWebhook(payload) {
             headers: { "Content-Type": "application/json; charset=utf-8" },
             body: JSON.stringify(payload),
         });
-
-        if (res.ok) {
-            console.log(`📤 Enviado a webhook OK (status: ${res.status})`);
-        } else {
-            console.error(`❌ Error HTTP ${res.status} al enviar al webhook.`);
-        }
+        if (!res.ok) console.error(`❌ Error HTTP ${res.status} al enviar al webhook.`);
     } catch (err) {
         console.error("❌ Error al enviar al webhook:", err.message);
     }
@@ -70,21 +52,22 @@ async function startTikTokConnection() {
     try {
         const delay = calculateReconnectDelay();
         if (reconnectAttempt > 0) {
-            console.log(`⏳ Reintentando conexión en ${delay / 1000}s (Intento #${reconnectAttempt})...`);
+            console.log(`⏳ Reintentando en ${delay / 1000}s (intento #${reconnectAttempt})...`);
             await new Promise((resolve) => setTimeout(resolve, delay));
         }
 
         console.log(`🚀 Conectando con @${TIKTOK_USERNAME}...`);
 
         tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME, {
-            processInitialData: false, // CRÍTICO: evita recibir el historial completo
+            processInitialData: false,
             enableExtendedGiftInfo: true,
         });
 
         // --- EVENTOS DE CONEXIÓN ---
         tiktokConnection.on("connect", (state) => {
+            connectionStartTimestamp = Math.floor(Date.now() / 1000); // 🔹 Momento exacto en segundos
             console.log(`✅ Conectado al live de @${TIKTOK_USERNAME} (RoomID: ${state.roomId})`);
-            console.log("❗ Historial deshabilitado: solo se procesarán nuevos mensajes.");
+            console.log(`⏱️ Ignorando mensajes anteriores a ${connectionStartTimestamp}`);
             reconnectAttempt = 0;
         });
 
@@ -101,14 +84,17 @@ async function startTikTokConnection() {
         // --- MENSAJES DE CHAT ---
         tiktokConnection.on("chat", (data) => {
             const nickname = data.nickname || data.user?.nickname || data.uniqueId || "Desconocido";
+            const msgTime = data.createTime || data.eventTime || 0; // segundos UNIX
 
-            // 🔑 Prioriza el ID interno de TikTok
+            // ⛔ Ignorar mensajes anteriores al inicio de conexión
+            if (msgTime < connectionStartTimestamp - 3) { 
+                console.log(`⏩ Ignorado mensaje viejo (${nickname}): "${data.comment}"`);
+                return;
+            }
+
             const messageId = data.msgId || data.id || null;
-            const uniqueKey = messageId
-                ? `msg:${messageId}`
-                : generateMessageHash(data, nickname); // fallback si no hay msgId
+            const uniqueKey = messageId ? `msg:${messageId}` : generateMessageHash(data, nickname);
 
-            // Evitar duplicados
             if (recentMessageCache.has(uniqueKey)) {
                 console.log(`🚫 Duplicado omitido (${uniqueKey.substring(0, 8)}): "${data.comment}"`);
                 return;
@@ -124,13 +110,16 @@ async function startTikTokConnection() {
                 timestamp: Date.now(),
             };
 
-            console.log(`💬 Nuevo mensaje (${uniqueKey.substring(0, 8)}): "${data.comment}"`);
+            console.log(`💬 ${nickname}: "${data.comment}"`);
             sendToWebhook(payload);
         });
 
-        // --- EVENTO DE REGALOS (opcional) ---
+        // --- EVENTOS DE REGALOS ---
         tiktokConnection.on("gift", (data) => {
-            console.log(`🎁 Regalo recibido de ${data.nickname}: ${data.giftName} (x${data.repeatCount || 1})`);
+            const msgTime = data.createTime || data.eventTime || 0;
+            if (msgTime < connectionStartTimestamp - 3) return; // evitar regalos antiguos
+
+            console.log(`🎁 Regalo de ${data.nickname}: ${data.giftName} (x${data.repeatCount || 1})`);
             sendToWebhook({
                 event: "gift",
                 nickname: data.nickname,
@@ -140,7 +129,6 @@ async function startTikTokConnection() {
             });
         });
 
-        // --- CONECTAR ---
         await tiktokConnection.connect();
     } catch (err) {
         console.error("❌ Error iniciando conexión:", err.message);
@@ -149,22 +137,22 @@ async function startTikTokConnection() {
 }
 
 /**
- * Manejo de reconexión con backoff exponencial.
+ * Lógica de reconexión con backoff exponencial.
  */
 function reconnectLogic() {
     reconnectAttempt++;
     console.log("♻️ Limpiando caché antes de reconectar...");
-    recentMessageCache.clear(); // evita duplicados falsos entre reconexiones
+    recentMessageCache.clear();
     tiktokConnection?.disconnect();
     setTimeout(startTikTokConnection, calculateReconnectDelay());
 }
 
 // --- SERVIDOR EXPRESS ---
 app.get("/", (req, res) => {
-    res.send(`✅ Servidor TikTok Webhook Forwarder corriendo. Monitoreando: @${TIKTOK_USERNAME}`);
+    res.send(`✅ Servidor TikTok Forwarder corriendo. Monitoreando: @${TIKTOK_USERNAME}`);
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+    console.log(`🚀 Servidor en puerto ${PORT}`);
     startTikTokConnection();
 });
