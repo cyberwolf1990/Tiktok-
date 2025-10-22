@@ -1,109 +1,85 @@
 import express from "express";
 import fetch from "node-fetch";
 import { WebcastPushConnection } from "tiktok-live-connector";
-import crypto from "crypto";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "1mb", type: "application/json" }));
 
 const PORT = process.env.PORT || 8080;
 const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook.macrodroid.com";
 const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "godbelcebu";
 
 let tiktokConnection;
-let reconnectAttempt = 0;
-const MAX_RECONNECT_INTERVAL_MS = 300000; // 5 min
-const RECONNECT_BASE_MS = 5000; // 5 seg
+let recentMessages = new Set();
+const MAX_STORED_MESSAGES = 200;
 
-// --- Cache para evitar mensajes duplicados ---
-const recentMessages = new Set();
-const CACHE_LIFESPAN_MS = 8000;
-
-// --- Funciones auxiliares ---
-function generateHash(data) {
-  const base = `${data.user?.uniqueId || ""}:${data.comment}`;
-  return crypto.createHash("sha256").update(base).digest("hex");
-}
-
-async function sendToWebhook(payload) {
-  try {
-    const res = await fetch(TARGET_WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    console.log(`📤 Enviado a webhook (${res.status})`);
-  } catch (err) {
-    console.error("❌ Error al enviar webhook:", err.message);
-  }
-}
-
-function calculateReconnectDelay() {
-  return Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt), MAX_RECONNECT_INTERVAL_MS);
-}
-
-function reconnect() {
-  reconnectAttempt++;
-  console.log(`♻️ Reintentando conexión en ${calculateReconnectDelay() / 1000}s...`);
-  setTimeout(startTikTokConnection, calculateReconnectDelay());
-}
-
-// --- Conexión principal ---
 async function startTikTokConnection() {
   try {
     console.log(`🚀 Conectando con @${TIKTOK_USERNAME}...`);
+    tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME);
 
-    tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME, {
-      processInitialData: false
-    });
+    tiktokConnection.connect()
+      .then((state) => {
+        console.log(`✅ Conectado al live de @${TIKTOK_USERNAME} (RoomID: ${state.roomId})`);
+      })
+      .catch((err) => {
+        console.error("❌ No hay live activo o error al conectar:", err.message);
+      });
 
-    tiktokConnection.on("connect", (state) => {
-      console.log(`✅ Conectado al live de @${TIKTOK_USERNAME} (RoomID: ${state.roomId})`);
-      reconnectAttempt = 0;
-    });
-
-    tiktokConnection.on("error", (err) => {
-      console.error("❌ Error en la conexión:", err.message);
-      reconnect();
-    });
-
-    tiktokConnection.on("streamEnd", () => {
-      console.log("⚠️ El live terminó. Reintentando más tarde...");
-      reconnect();
-    });
-
-    // --- Solo evento chat ---
+    // 🗨️ Evento de chat
     tiktokConnection.on("chat", async (data) => {
-      const hash = generateHash(data);
-      if (recentMessages.has(hash)) return;
+      if (recentMessages.has(data.msgId)) return;
+      recentMessages.add(data.msgId);
+      if (recentMessages.size > MAX_STORED_MESSAGES) {
+        recentMessages = new Set([...recentMessages].slice(-MAX_STORED_MESSAGES));
+      }
 
-      recentMessages.add(hash);
-      setTimeout(() => recentMessages.delete(hash), CACHE_LIFESPAN_MS);
+      const nickname =
+        data.nickname ||
+        data.user?.nickname ||
+        data.user?.profile?.nickname ||
+        data.userProfile?.nickname ||
+        data.uniqueId ||
+        "Desconocido";
 
-      const nickname = data.nickname || data.user?.nickname || data.uniqueId || "Desconocido";
+      const comment = Buffer.from(data.comment, "utf8").toString("utf8");
 
       const payload = {
-        event: "chat",
-        nickname: nickname,
-        comment: data.comment,
-        timestamp: Date.now()
+        nickname,
+        comment,
+        timestamp: Date.now(),
       };
 
-      console.log(`💬 ${nickname}: "${data.comment}"`);
-      sendToWebhook(payload);
+      console.log("💬 Comentario recibido:", payload);
+
+      try {
+        const res = await fetch(TARGET_WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify(payload),
+        });
+        console.log(`📤 Enviado a webhook (status: ${res.status})`);
+      } catch (err) {
+        console.error("❌ Error enviando al webhook:", err.message);
+      }
     });
 
-    await tiktokConnection.connect();
+    // 🟡 Cuando termina el live
+    tiktokConnection.on("streamEnd", () => {
+      console.log("⚠️ Live terminado, reconectando en 60s...");
+      setTimeout(startTikTokConnection, 60000);
+    });
 
   } catch (err) {
-    console.error("❌ Error grave al conectar:", err.message);
-    reconnect();
+    console.error("❌ Error inicializando TikTok:", err.message);
   }
 }
 
-// --- Servidor Express ---
 app.get("/", (req, res) => {
-  res.send(`✅ Servidor TikTok Chat Forwarder corriendo. Monitoreando: @${TIKTOK_USERNAME}`);
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.send("✅ Servidor TikTok Webhook Forwarder corriendo correctamente con UTF-8");
 });
 
 app.listen(PORT, () => {
