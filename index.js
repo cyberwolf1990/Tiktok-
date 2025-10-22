@@ -1,13 +1,14 @@
 import express from "express";
 import fetch from "node-fetch";
 import { WebcastPushConnection } from "tiktok-live-connector";
+import crypto from "crypto"; // Módulo nativo de Node.js para generar hashes
 
 const app = express();
 app.use(express.json());
 
 // --- CONFIGURACIÓN DE ENTORNO ---
 const PORT = process.env.PORT || 8080;
-// URL de destino del webhook, por ejemplo, Macrodroid.
+// URL de destino del webhook.
 const TARGET_WEBHOOK_URL = process.env.TARGET_WEBHOOK_URL || "https://tu-webhook-de-prueba.com";
 // Nombre de usuario de TikTok a monitorear.
 const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "godbelcebu";
@@ -15,19 +16,24 @@ const TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || "godbelcebu";
 // --- VARIABLES DE ESTADO ---
 let tiktokConnection;
 let reconnectAttempt = 0;
-const MAX_RECONNECT_INTERVAL_MS = 300000; // 5 minutos (Máximo de espera)
+const MAX_RECONNECT_INTERVAL_MS = 300000; // 5 minutos (Límite máximo de espera)
 const RECONNECT_BASE_MS = 5000; // 5 segundos (Base para el backoff exponencial)
+
+// --- CACHÉ DE DEDUPLICACIÓN ---
+// Almacena los hashes (IDs únicos) de los mensajes procesados recientemente.
+// Esto es CRÍTICO para evitar duplicados después de una reconexión.
+const recentMessageCache = new Set(); 
+const CACHE_LIFESPAN_MS = 10000; // Los hashes se mantienen en caché por 10 segundos.
 
 // --- FUNCIONES DE UTILIDAD ---
 
 /**
  * Calcula el tiempo de espera para el próximo intento de reconexión
  * usando un retroceso exponencial con un límite máximo (capped exponential backoff).
- * Esto evita saturar el servicio de TikTok con reintentos fallidos.
  * @returns {number} Tiempo de espera en milisegundos.
  */
 function calculateReconnectDelay() {
-    // Math.pow(2, reconnectAttempt) * 1000, limitado por MAX_RECONNECT_INTERVAL_MS
+    // Calcula el retroceso: 5s, 10s, 20s, 40s, ... hasta 5 minutos.
     const delay = Math.min(
         RECONNECT_BASE_MS * Math.pow(2, reconnectAttempt),
         MAX_RECONNECT_INTERVAL_MS
@@ -36,18 +42,39 @@ function calculateReconnectDelay() {
 }
 
 /**
+ * Genera un hash (ID único) para un mensaje de chat.
+ * Usa el ID de usuario, el comentario y un segmento de tiempo para identificar duplicados.
+ * @param {object} data - Los datos del evento 'chat' de TikTok.
+ * @param {string} nickname - El nombre de usuario.
+ * @returns {string} Hash SHA256 único.
+ */
+function generateMessageHash(data, nickname) {
+    // Usamos uniqueId (si está disponible) para identificar al usuario.
+    const uniqueIdPart = data.user?.uniqueId || nickname; 
+    const commentPart = data.comment;
+
+    // Segmento de tiempo: Redondeamos el timestamp a los 5 segundos más cercanos.
+    // Esto agrupa mensajes duplicados recibidos en la misma ventana corta de tiempo.
+    const timeSegment = Math.floor(Date.now() / 5000) * 5000;
+    
+    // String combinada para el hash
+    const combinedString = `${uniqueIdPart}:${commentPart}:${timeSegment}`;
+
+    // Genera el hash
+    return crypto.createHash('sha256').update(combinedString).digest('hex');
+}
+
+
+/**
  * Lógica para enviar el payload al webhook de forma asíncrona.
+ * Se usa "fire-and-forget" para no bloquear la recepción de mensajes.
  * @param {object} payload - El objeto de datos a enviar.
  */
 async function sendToWebhook(payload) {
     try {
-        // La llamada a fetch es intrínsecamente asíncrona, lo que es bueno.
-        // Asegúrate de que TARGET_WEBHOOK_URL responde RÁPIDO para no bloquear el Event Loop.
         const res = await fetch(TARGET_WEBHOOK_URL, {
             method: "POST",
-            // Se añade 'utf-8' por si el webhook lo requiere, aunque fetch lo infiere.
             headers: { "Content-Type": "application/json; charset=utf-8" },
-            // Se usa el modo 'no-cors' si el entorno de ejecución lo exige, aunque Node.js lo maneja.
             body: JSON.stringify(payload)
         });
 
@@ -55,20 +82,15 @@ async function sendToWebhook(payload) {
             console.log(`📤 Enviado a webhook OK (status: ${res.status})`);
         } else {
             console.error(`❌ Error HTTP ${res.status} al enviar al webhook.`);
-            // Opcional: Loggear el cuerpo de la respuesta para depuración.
-            // console.error(await res.text());
         }
     } catch (err) {
         console.error("❌ Error grave enviando al webhook (tiempo de espera o red):", err.message);
-        // NOTA: Si este error es frecuente, considera usar una cola (como Redis o un simple array)
-        // para reintentar estos mensajes más tarde, en lugar de perderlos.
     }
 }
 
 
 /**
  * Inicializa la conexión con TikTok Live.
- * Incluye la lógica de reintento.
  */
 async function startTikTokConnection() {
     try {
@@ -80,12 +102,10 @@ async function startTikTokConnection() {
 
         console.log(`🚀 Intentando conectar con @${TIKTOK_USERNAME}...`);
         
-        // Se reinicializa la conexión en cada intento para evitar estados previos
         tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME, {
-             // **CRÍTICO:** Asegura que los mensajes iniciales (los últimos segundos) se procesen.
+            // CRÍTICO: Asegura que los mensajes iniciales (los últimos segundos) se procesen.
             processInitialData: true, 
-             // Intenta reconectar automáticamente.
-            enableExtendedGiftInfo: true // Opcional, para info detallada de regalos.
+            enableExtendedGiftInfo: true 
         });
 
         // --- MANEJO DE EVENTOS ---
@@ -96,49 +116,58 @@ async function startTikTokConnection() {
             reconnectAttempt = 0; // Reinicia el contador de intentos al conectar.
         });
 
-        // 2. Errores de Conexión (Importante para la reconexión)
+        // 2. Errores de Conexión
         tiktokConnection.on("error", (err) => {
             console.error(`❌ Error en la conexión del conector: ${err.message}.`);
-            // Se llama a la lógica de reconexión
             reconnectLogic();
         });
 
-        // 3. Fin del Live (Live ha terminado)
+        // 3. Fin del Live o desconexión
         tiktokConnection.on("streamEnd", () => {
             console.log("⚠️ Live terminado o desconexión forzada. Intentando reconectar.");
-            // Se llama a la lógica de reconexión
             reconnectLogic();
         });
         
-        // 4. Mensajes de Chat (El foco principal de la optimización)
+        // 4. Mensajes de Chat (Lógica de deduplicación)
         tiktokConnection.on("chat", (data) => {
-            // Se utiliza el operador de encadenamiento opcional para una extracción de datos más segura.
             const nickname = data.nickname || data.user?.nickname || data.uniqueId || "Desconocido";
 
+            // 1. Generar el Hash del mensaje
+            const messageHash = generateMessageHash(data, nickname);
+
+            // 2. Comprobar si es un duplicado
+            if (recentMessageCache.has(messageHash)) {
+                console.log(`🚫 Mensaje duplicado detectado (Hash: ${messageHash.substring(0, 8)}). Omitiendo: "${data.comment}"`);
+                return; // Ignorar el mensaje duplicado
+            }
+
+            // 3. Añadir el hash al caché y programar su eliminación
+            recentMessageCache.add(messageHash);
+            setTimeout(() => {
+                recentMessageCache.delete(messageHash);
+            }, CACHE_LIFESPAN_MS);
+            
+            // 4. Si no es duplicado, procesar y enviar
             const payload = {
-                event: 'chat', // Añade el tipo de evento para que el webhook lo filtre
+                event: 'chat',
                 nickname: nickname,
                 comment: data.comment,
                 timestamp: Date.now()
             };
 
-            console.log("💬 Comentario recibido:", payload.comment);
+            console.log(`💬 Comentario procesado (Hash: ${messageHash.substring(0, 8)}): "${data.comment}"`);
             
-            // CRÍTICO: La función de envío al webhook se ejecuta de forma asíncrona,
-            // pero sin usar 'await' aquí. Esto es un patrón "fire-and-forget"
-            // que asegura que el Event Loop no se bloquee mientras se espera la
-            // respuesta del webhook, permitiendo que el conector procese el siguiente
-            // mensaje de TikTok inmediatamente. ¡Esto reduce la pérdida de mensajes!
+            // Patrón Fire-and-Forget: Inicia el envío sin esperar respuesta para no bloquear.
             sendToWebhook(payload);
         });
 
-        // Opcional: Añadir otros eventos si los necesitas
+        // 5. Evento de Regalo (Ejemplo)
         tiktokConnection.on("gift", (data) => {
-             console.log(`🎁 Regalo recibido de ${data.nickname}: ${data.giftName}`);
+             console.log(`🎁 Regalo recibido de ${data.nickname}: ${data.giftName} (x${data.repeatCount || 1})`);
              sendToWebhook({ event: 'gift', nickname: data.nickname, giftName: data.giftName, count: data.repeatCount || 1, timestamp: Date.now() });
         });
         
-        // 5. Intentar Conectar
+        // 6. Intentar Conectar
         await tiktokConnection.connect();
 
 
@@ -153,7 +182,7 @@ async function startTikTokConnection() {
  */
 function reconnectLogic() {
     reconnectAttempt++;
-    tiktokConnection?.disconnect(); // Asegura la desconexión limpia si estaba conectado
+    tiktokConnection?.disconnect(); // Asegura la desconexión limpia
     setTimeout(startTikTokConnection, calculateReconnectDelay());
 }
 
@@ -168,3 +197,4 @@ app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
   startTikTokConnection(); // Inicia la conexión de TikTok al iniciar el servidor
 });
+        
