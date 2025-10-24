@@ -19,13 +19,13 @@ let lastMessageTime = Date.now();
 
 async function startTikTokConnection() {
   try {
-    console.log(`🚀 Conectando con @${TIKTOK_USERNAME}...`);
+    console.log(`Conectando con @${TIKTOK_USERNAME}...`);
     tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME);
 
     await tiktokConnection.connect();
-    console.log(`✅ Conectado al live de @${TIKTOK_USERNAME}`);
+    console.log(`Conectado al live de @${TIKTOK_USERNAME}`);
 
-    // 🗨️ Chat normal
+    // 🗨️ Chat normal y stickers de chat
     tiktokConnection.on("chat", async (data) => {
       lastMessageTime = Date.now();
 
@@ -46,14 +46,17 @@ async function startTikTokConnection() {
 
       const comment = Buffer.from(data.comment || "", "utf8").toString("utf8");
 
+      // Detecta stickers de chat usando el ID
+      const stickerId = data.emote?.id || data.sticker?.stickerId || null;
+
       const payload = {
         nickname,
         comment,
-        stickerUrl: null, // chat normal no tiene sticker
+        stickerId,
         timestamp: Date.now(),
       };
 
-      console.log("💬 Comentario recibido:", payload);
+      console.log("Mensaje recibido:", payload);
 
       try {
         await fetch(TARGET_WEBHOOK_URL, {
@@ -62,48 +65,19 @@ async function startTikTokConnection() {
           body: JSON.stringify(payload),
         });
       } catch (err) {
-        console.error("❌ Error enviando chat:", err.message);
-      }
-    });
-
-    // 🎁 Stickers enviados como gift
-    tiktokConnection.on("gift", async (data) => {
-      lastMessageTime = Date.now();
-
-      const nickname = data.nickname || "Desconocido";
-      const stickerUrl = data.gift?.sticker?.image?.url || null;
-
-      if (!stickerUrl) return; // Ignora regalos normales sin sticker
-
-      const payload = {
-        nickname,
-        comment: "", // no hay texto en sticker gift
-        stickerUrl,
-        timestamp: Date.now(),
-      };
-
-      console.log("🎁 Sticker recibido:", payload);
-
-      try {
-        await fetch(TARGET_WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify(payload),
-        });
-      } catch (err) {
-        console.error("❌ Error enviando sticker:", err.message);
+        console.error("Error enviando al webhook:", err.message);
       }
     });
 
     // 🟡 Live terminado
     tiktokConnection.on("streamEnd", () => {
-      console.log("⚠️ Live terminado, reconectando en 60s...");
+      console.log("Live terminado, reconectando en 60s...");
       setTimeout(startTikTokConnection, 60000);
     });
 
     // 🔌 Desconexión inesperada
     tiktokConnection.on("disconnected", () => {
-      console.warn("⚠️ Conexión perdida, reconectando en 10s...");
+      console.warn("Conexión perdida, reconectando en 10s...");
       setTimeout(startTikTokConnection, 10000);
     });
 
@@ -111,15 +85,15 @@ async function startTikTokConnection() {
     setInterval(() => {
       const now = Date.now();
       if (now - lastMessageTime > INACTIVITY_LIMIT_MS) {
-        console.warn("⚠️ Inactividad detectada, reiniciando conexión TikTok...");
+        console.warn("Inactividad detectada, reiniciando conexión TikTok...");
         try { tiktokConnection.disconnect(); } catch(e) {}
         startTikTokConnection();
       }
     }, 60000);
 
   } catch (err) {
-    console.error("❌ Error inicializando TikTok:", err.message);
-    console.log("🔁 Reintentando conexión en 30s...");
+    console.error("Error inicializando TikTok:", err.message);
+    console.log("Reintentando conexión en 30s...");
     setTimeout(startTikTokConnection, 30000);
   }
 }
@@ -127,10 +101,10 @@ async function startTikTokConnection() {
 // --- Servidor Express ---
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send("✅ Servidor TikTok Webhook Forwarder corriendo con UTF-8, chat + stickers");
+  res.send("Servidor TikTok Webhook Forwarder corriendo con chat + stickers de chat (stickerId)");
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+  console.log(`Servidor corriendo en puerto ${PORT}`);
   startTikTokConnection();
 });
