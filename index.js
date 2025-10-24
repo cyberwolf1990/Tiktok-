@@ -13,6 +13,7 @@ let tiktokConnection;
 let recentMessages = new Set();
 const MAX_STORED_MESSAGES = 200;
 
+// Inactividad máxima antes de reiniciar (2 min)
 const INACTIVITY_LIMIT_MS = 120000;
 let lastMessageTime = Date.now();
 
@@ -28,6 +29,7 @@ async function startTikTokConnection() {
     tiktokConnection.on("chat", async (data) => {
       lastMessageTime = Date.now();
 
+      // Evita duplicados
       if (recentMessages.has(data.msgId)) return;
       recentMessages.add(data.msgId);
       if (recentMessages.size > MAX_STORED_MESSAGES) {
@@ -43,7 +45,12 @@ async function startTikTokConnection() {
         "Desconocido";
 
       const comment = Buffer.from(data.comment || "", "utf8").toString("utf8");
-      const stickerUrl = data.sticker?.image?.url || data.emote?.image?.url || null;
+
+      // Detecta stickers correctamente
+      const stickerUrl =
+        data.sticker?.image?.url ||   // stickers estándar
+        data.emote?.image?.url ||     // stickers/emotes en chat
+        null;
 
       const payload = {
         nickname,
@@ -66,7 +73,7 @@ async function startTikTokConnection() {
       }
     });
 
-    // 🟡 Cuando termina el live
+    // 🟡 Live terminado
     tiktokConnection.on("streamEnd", () => {
       console.log("⚠️ Live terminado, reconectando en 60s...");
       setTimeout(startTikTokConnection, 60000);
@@ -98,7 +105,7 @@ async function startTikTokConnection() {
 // --- Servidor Express ---
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send("✅ Servidor TikTok Webhook Forwarder corriendo correctamente con UTF-8, chat + stickers");
+  res.send("✅ Servidor TikTok Webhook Forwarder corriendo con UTF-8, chat + stickers");
 });
 
 app.listen(PORT, () => {
