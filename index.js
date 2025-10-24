@@ -25,7 +25,7 @@ async function startTikTokConnection() {
     await tiktokConnection.connect();
     console.log(`✅ Conectado al live de @${TIKTOK_USERNAME}`);
 
-    // 🗨️ Chat y stickers
+    // 🗨️ Chat normal
     tiktokConnection.on("chat", async (data) => {
       lastMessageTime = Date.now();
 
@@ -46,30 +46,52 @@ async function startTikTokConnection() {
 
       const comment = Buffer.from(data.comment || "", "utf8").toString("utf8");
 
-      // Detecta stickers correctamente
-      const stickerUrl =
-        data.sticker?.image?.url ||   // stickers estándar
-        data.emote?.image?.url ||     // stickers/emotes en chat
-        null;
-
       const payload = {
         nickname,
         comment,
-        stickerUrl,
+        stickerUrl: null, // chat normal no tiene sticker
         timestamp: Date.now(),
       };
 
       console.log("💬 Comentario recibido:", payload);
 
       try {
-        const res = await fetch(TARGET_WEBHOOK_URL, {
+        await fetch(TARGET_WEBHOOK_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json; charset=utf-8" },
           body: JSON.stringify(payload),
         });
-        console.log(`📤 Enviado a webhook (status: ${res.status})`);
       } catch (err) {
-        console.error("❌ Error enviando al webhook:", err.message);
+        console.error("❌ Error enviando chat:", err.message);
+      }
+    });
+
+    // 🎁 Stickers enviados como gift
+    tiktokConnection.on("gift", async (data) => {
+      lastMessageTime = Date.now();
+
+      const nickname = data.nickname || "Desconocido";
+      const stickerUrl = data.gift?.sticker?.image?.url || null;
+
+      if (!stickerUrl) return; // Ignora regalos normales sin sticker
+
+      const payload = {
+        nickname,
+        comment: "", // no hay texto en sticker gift
+        stickerUrl,
+        timestamp: Date.now(),
+      };
+
+      console.log("🎁 Sticker recibido:", payload);
+
+      try {
+        await fetch(TARGET_WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify(payload),
+        });
+      } catch (err) {
+        console.error("❌ Error enviando sticker:", err.message);
       }
     });
 
