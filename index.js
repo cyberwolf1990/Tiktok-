@@ -13,21 +13,21 @@ let tiktokConnection;
 let recentMessages = new Set();
 const MAX_STORED_MESSAGES = 200;
 
+const INACTIVITY_LIMIT_MS = 120000;
+let lastMessageTime = Date.now();
+
 async function startTikTokConnection() {
   try {
     console.log(`🚀 Conectando con @${TIKTOK_USERNAME}...`);
     tiktokConnection = new WebcastPushConnection(TIKTOK_USERNAME);
 
-    tiktokConnection.connect()
-      .then((state) => {
-        console.log(`✅ Conectado al live de @${TIKTOK_USERNAME} (RoomID: ${state.roomId})`);
-      })
-      .catch((err) => {
-        console.error("❌ No hay live activo o error al conectar:", err.message);
-      });
+    await tiktokConnection.connect();
+    console.log(`✅ Conectado al live de @${TIKTOK_USERNAME}`);
 
-    // 🗨️ Evento de chat
+    // 🗨️ Chat y stickers
     tiktokConnection.on("chat", async (data) => {
+      lastMessageTime = Date.now();
+
       if (recentMessages.has(data.msgId)) return;
       recentMessages.add(data.msgId);
       if (recentMessages.size > MAX_STORED_MESSAGES) {
@@ -42,11 +42,13 @@ async function startTikTokConnection() {
         data.uniqueId ||
         "Desconocido";
 
-      const comment = Buffer.from(data.comment, "utf8").toString("utf8");
+      const comment = Buffer.from(data.comment || "", "utf8").toString("utf8");
+      const stickerUrl = data.sticker?.image?.url || data.emote?.image?.url || null;
 
       const payload = {
         nickname,
         comment,
+        stickerUrl,
         timestamp: Date.now(),
       };
 
@@ -55,9 +57,7 @@ async function startTikTokConnection() {
       try {
         const res = await fetch(TARGET_WEBHOOK_URL, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json; charset=utf-8",
-          },
+          headers: { "Content-Type": "application/json; charset=utf-8" },
           body: JSON.stringify(payload),
         });
         console.log(`📤 Enviado a webhook (status: ${res.status})`);
@@ -72,14 +72,33 @@ async function startTikTokConnection() {
       setTimeout(startTikTokConnection, 60000);
     });
 
+    // 🔌 Desconexión inesperada
+    tiktokConnection.on("disconnected", () => {
+      console.warn("⚠️ Conexión perdida, reconectando en 10s...");
+      setTimeout(startTikTokConnection, 10000);
+    });
+
+    // 💓 Heartbeat: revisa cada 60s si hubo mensajes
+    setInterval(() => {
+      const now = Date.now();
+      if (now - lastMessageTime > INACTIVITY_LIMIT_MS) {
+        console.warn("⚠️ Inactividad detectada, reiniciando conexión TikTok...");
+        try { tiktokConnection.disconnect(); } catch(e) {}
+        startTikTokConnection();
+      }
+    }, 60000);
+
   } catch (err) {
     console.error("❌ Error inicializando TikTok:", err.message);
+    console.log("🔁 Reintentando conexión en 30s...");
+    setTimeout(startTikTokConnection, 30000);
   }
 }
 
+// --- Servidor Express ---
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send("✅ Servidor TikTok Webhook Forwarder corriendo correctamente con UTF-8");
+  res.send("✅ Servidor TikTok Webhook Forwarder corriendo correctamente con UTF-8, chat + stickers");
 });
 
 app.listen(PORT, () => {
