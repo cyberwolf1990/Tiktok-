@@ -25,7 +25,7 @@ async function startTikTokConnection() {
     await tiktokConnection.connect();
     console.log(`Conectado al live de @${TIKTOK_USERNAME}`);
 
-    // 🗨️ Chat normal y stickers de chat
+    // 🗨️ Chat normal
     tiktokConnection.on("chat", async (data) => {
       lastMessageTime = Date.now();
 
@@ -46,23 +46,16 @@ async function startTikTokConnection() {
 
       const comment = Buffer.from(data.comment || "", "utf8").toString("utf8");
 
-      // Detecta stickers de chat usando el ID
-      const stickerId = data.emote?.id || data.sticker?.stickerId || null;
+      // Formato de texto plano
+      const messageText = `${nickname} dice: ${comment}`;
 
-      const payload = {
-        nickname,
-        comment,
-        stickerId,
-        timestamp: Date.now(),
-      };
-
-      console.log("Mensaje recibido:", payload);
+      console.log("Mensaje recibido:", messageText);
 
       try {
         await fetch(TARGET_WEBHOOK_URL, {
           method: "POST",
-          headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify(payload),
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+          body: messageText,
         });
       } catch (err) {
         console.error("Error enviando al webhook:", err.message);
@@ -101,7 +94,7 @@ async function startTikTokConnection() {
 // --- Servidor Express ---
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send("Servidor TikTok Webhook Forwarder corriendo con chat + stickers de chat (stickerId)");
+  res.send("Servidor TikTok Webhook Forwarder corriendo (solo chat en texto plano)");
 });
 
 app.listen(PORT, () => {
